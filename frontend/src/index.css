@@ -1,0 +1,26 @@
+@import './styles/design-system.css';
+
+#root {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+main {
+  flex: 1;
+}
+
+#ro.ssn-container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 2rem;
+  text-align: center;
+  /* Centering text globally within primary containers */
+}
+
+.ssn-container-wide {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 0 1rem;
+  /* Main dashboard content slightly less aggressive centering for tables */
+}
