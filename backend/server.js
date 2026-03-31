@@ -237,8 +237,25 @@ app.post('/api/projects/:id/approve', authenticateToken, (req, res) => {
             // If it's a patent that was just approved but lacked specific state, mark it as Filed
             db.run("UPDATE projects SET status = 'Filed' WHERE id = ? AND type = 'Patent' AND date_filed IS NULL", [id]);
 
-            db.get("SELECT owner_id, title FROM projects WHERE id = ?", [id], (err, proj) => {
-                if (proj) createNotification(proj.owner_id, `HOD gave final approval for "${proj.title}"!`, 'overview');
+            db.get("SELECT * FROM projects WHERE id = ?", [id], (err, proj) => {
+                if (proj) {
+                    createNotification(proj.owner_id, `HOD gave final approval for "${proj.title}"!`, 'overview');
+
+                    // --- Phase 6 Extension: Auto-Migration to Institutional Directory ---
+                    if (proj.type === 'Journal Publication') {
+                        db.run("INSERT INTO journal_publications (article_title, authors, affiliations, journal_title, doi, publication_date, quartile, added_by) VALUES (?, ?, 'SSN College of Engineering', ?, ?, ?, 'NA', ?)",
+                            [proj.title, proj.inventors || 'Unknown', proj.journal || 'Unknown', proj.paper_link || '', proj.date_published || new Date().toISOString().split('T')[0], proj.owner_id]);
+                    } else if (proj.type === 'Conference') {
+                        db.run("INSERT INTO conference_publications (conference_title, paper_title, authors, affiliations, doi, quartile, added_by) VALUES (?, ?, ?, 'SSN College of Engineering', ?, 'NA', ?)",
+                            [proj.journal || 'Unknown', proj.title, proj.inventors || 'Unknown', proj.paper_link || '', proj.owner_id]);
+                    } else if (proj.type === 'Article') {
+                        db.run("INSERT INTO articles (article_title, authors, affiliations, publication_source, publication_date, doi, quartile, added_by) VALUES (?, ?, 'SSN College of Engineering', ?, ?, ?, 'NA', ?)",
+                            [proj.title, proj.inventors || 'Unknown', proj.journal || 'Unknown', proj.date_published || new Date().toISOString().split('T')[0], proj.paper_link || '', proj.owner_id]);
+                    } else if (proj.type === 'In-proceeding') {
+                        db.run("INSERT INTO inproceedings (paper_title, authors, affiliations, proceedings_title, quartile, added_by) VALUES (?, ?, 'SSN College of Engineering', ?, 'NA', ?)",
+                            [proj.title, proj.inventors || 'Unknown', proj.journal || 'Unknown', proj.owner_id]);
+                    }
+                }
             });
 
             res.json({ message: 'FINAL APPROVAL GRANTED.' });

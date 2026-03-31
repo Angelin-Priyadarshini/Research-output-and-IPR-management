@@ -243,6 +243,7 @@ const DashboardLayout = ({ children, activeModule, setActiveModule, user, onLogo
           <SidebarSection title="Research Hub">
             <SidebarItem icon={<LayoutDashboard />} label="Research Analytics" active={activeModule === 'research_dashboard'} onClick={() => setActiveModule('research_dashboard')} />
             <SidebarItem icon={<ScanSearch />} label="DOI Scraper Tool" active={activeModule === 'doi_scraper'} onClick={() => setActiveModule('doi_scraper')} />
+            <SidebarItem icon={<Upload />} label="File New Research" active={activeModule === 'submit_research'} onClick={() => setActiveModule('submit_research')} />
             <SidebarItem icon={<BookOpen />} label="Journals" active={activeModule === 'journals'} onClick={() => setActiveModule('journals')} />
             <SidebarItem icon={<Users />} label="Conferences" active={activeModule === 'conferences'} onClick={() => setActiveModule('conferences')} />
             <SidebarItem icon={<Newspaper />} label="Articles" active={activeModule === 'articles'} onClick={() => setActiveModule('articles')} />
@@ -303,17 +304,22 @@ const InteractiveStatCard = ({ label, value, icon, color, onClick }) => (
 );
 
 // --- Advanced Submission Form ---
-const SubmitResearchForm = ({ onSubmitted, editingProject = null, onCancelEdit = null, user }) => {
+const SubmitResearchForm = ({ onSubmitted, editingProject = null, onCancelEdit = null, user, mode = 'ipr' }) => {
   const [title, setTitle] = useState(editingProject?.title || '');
-  const [type, setType] = useState(editingProject?.type || 'Publication');
-  const [category, setCategory] = useState(editingProject?.category || 'Paper');
+  const [type, setType] = useState(editingProject?.type || (mode === 'research' ? 'Journal Publication' : 'Patent'));
+  const [category, setCategory] = useState(editingProject?.category || (mode === 'research' ? 'Paper' : 'Invention'));
   const [abstract, setAbstract] = useState(editingProject?.abstract || '');
   const [mentorId, setMentorId] = useState(editingProject?.mentor_id || '');
 
   // New Phase 6 Fields
   const [year, setYear] = useState(editingProject?.year || new Date().getFullYear());
   const [journal, setJournal] = useState(editingProject?.journal || '');
-  const [paperLink, setPaperLink] = useState(editingProject?.paper_link || '');
+  // Journal Specific Fields
+  const [authors, setAuthors] = useState(editingProject?.authors || '');
+  const [affiliations, setAffiliations] = useState(editingProject?.affiliations || 'SSN College of Engineering');
+  const [journalTitle, setJournalTitle] = useState(editingProject?.journal_title || '');
+  const [doi, setDoi] = useState(editingProject?.doi || '');
+  const [publicationDate, setPublicationDate] = useState(editingProject?.publication_date || '');
 
   const [patentNo, setPatentNo] = useState(editingProject?.patent_no || '');
   const [inventors, setInventors] = useState(editingProject?.inventors || '');
@@ -348,6 +354,7 @@ const SubmitResearchForm = ({ onSubmitted, editingProject = null, onCancelEdit =
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
+
     const url = editingProject
       ? `http://localhost:5000/api/projects/${editingProject.id}`
       : 'http://localhost:5000/api/projects/submit';
@@ -366,7 +373,14 @@ const SubmitResearchForm = ({ onSubmitted, editingProject = null, onCancelEdit =
           file_name: file?.name || editingProject?.file_name || 'research_submission.pdf',
           file_type: file?.type || editingProject?.file_type || 'application/pdf',
           paper_content: 'MOCK_BASE64_DATA',
-          patent_no: patentNo, inventors, date_filed: dateFiled, date_published: datePublished, date_granted: dateGranted, proof_link: proofLink // Patent data
+          patent_no: patentNo, 
+          inventors: mode === 'research' ? authors : inventors, 
+          date_filed: dateFiled, 
+          date_published: mode === 'research' ? publicationDate : datePublished, 
+          date_granted: dateGranted, 
+          proof_link: proofLink,
+          journal: mode === 'research' ? journalTitle : journal,
+          paper_link: mode === 'research' ? doi : paperLink
         })
       });
       if (!res.ok) throw new Error('Submission failed');
@@ -383,7 +397,7 @@ const SubmitResearchForm = ({ onSubmitted, editingProject = null, onCancelEdit =
     <div className="fade-in">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2.5rem' }}>
         <h2 style={{ fontSize: '2rem', fontWeight: '800', color: 'var(--ssn-navy)' }}>
-          {editingProject ? 'Edit & Resubmit Disclosure' : 'New IPR Disclosure'}
+          {editingProject ? 'Edit & Resubmit Disclosure' : (mode === 'research' ? 'New Research Disclosure' : 'New IPR Disclosure')}
         </h2>
         {editingProject && (
           <button onClick={onCancelEdit} className="ssn-button" style={{ borderColor: '#666', color: '#666' }}>Cancel</button>
@@ -393,12 +407,22 @@ const SubmitResearchForm = ({ onSubmitted, editingProject = null, onCancelEdit =
       <div className="ssn-card" style={{ maxWidth: '900px', padding: '3rem' }}>
         <form onSubmit={handleSubmit}>
           <div style={{ marginBottom: '2rem' }}>
-            <label style={{ display: 'block', fontWeight: '700', fontSize: '0.9rem', marginBottom: '0.75rem', color: '#444' }}>IPR Asset Type</label>
+            <label style={{ display: 'block', fontWeight: '700', fontSize: '0.9rem', marginBottom: '0.75rem', color: '#444' }}>{mode === 'research' ? 'Research Output Type' : 'IPR Asset Type'}</label>
             <select value={type} onChange={(e) => setType(e.target.value)} style={{ width: '100%', padding: '0.85rem', borderRadius: '12px', border: '1.5px solid var(--ssn-border)', fontSize: '1rem', background: 'white' }}>
-              <option>Publication</option>
-              <option>Patent</option>
-              <option>Trademark</option>
-              <option>Copyright</option>
+              {mode === 'research' ? (
+                <>
+                  <option>Journal Publication</option>
+                  <option>Conference</option>
+                  <option>Article</option>
+                  <option>In-proceeding</option>
+                </>
+              ) : (
+                <>
+                  <option>Patent</option>
+                  <option>Trademark</option>
+                  <option>Copyright</option>
+                </>
+              )}
             </select>
           </div>
 
@@ -408,19 +432,27 @@ const SubmitResearchForm = ({ onSubmitted, editingProject = null, onCancelEdit =
           </div>
 
           {/* Conditional Fields based on Type */}
-          {type === 'Publication' && (
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 2fr', gap: '1rem', marginBottom: '2rem', background: '#f8fafc', padding: '1.5rem', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
+          {(type === 'Journal Publication' || type === 'Conference' || type === 'Article' || type === 'In-proceeding') && (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem', marginBottom: '2rem', background: '#f8fafc', padding: '1.5rem', borderRadius: '12px', border: '1px solid #e2e8f0' }}>
               <div>
-                <label style={{ display: 'block', fontWeight: 'bold', fontSize: '0.8rem', marginBottom: '0.5rem' }}>Year</label>
-                <input type="number" value={year} onChange={(e) => setYear(e.target.value)} style={{ width: '100%', padding: '0.75rem', borderRadius: '8px', border: '1px solid #ccc' }} />
+                <label style={{ display: 'block', fontWeight: 'bold', fontSize: '0.8rem', marginBottom: '0.5rem' }}>Authors</label>
+                <input type="text" placeholder="e.g. John D., Alan T." value={authors} onChange={(e) => setAuthors(e.target.value)} style={{ width: '100%', padding: '0.75rem', borderRadius: '8px', border: '1px solid #ccc' }} required />
               </div>
               <div>
-                <label style={{ display: 'block', fontWeight: 'bold', fontSize: '0.8rem', marginBottom: '0.5rem' }}>Journal / Conference</label>
-                <input type="text" placeholder="e.g. IEEE Access" value={journal} onChange={(e) => setJournal(e.target.value)} style={{ width: '100%', padding: '0.75rem', borderRadius: '8px', border: '1px solid #ccc' }} />
+                <label style={{ display: 'block', fontWeight: 'bold', fontSize: '0.8rem', marginBottom: '0.5rem' }}>Affiliations</label>
+                <input type="text" value={affiliations} onChange={(e) => setAffiliations(e.target.value)} style={{ width: '100%', padding: '0.75rem', borderRadius: '8px', border: '1px solid #ccc' }} required />
               </div>
               <div>
-                <label style={{ display: 'block', fontWeight: 'bold', fontSize: '0.8rem', marginBottom: '0.5rem' }}>DOI / Paper Link</label>
-                <input type="text" placeholder="https://doi.org/10..." value={paperLink} onChange={(e) => setPaperLink(e.target.value)} style={{ width: '100%', padding: '0.75rem', borderRadius: '8px', border: '1px solid #ccc' }} />
+                <label style={{ display: 'block', fontWeight: 'bold', fontSize: '0.8rem', marginBottom: '0.5rem' }}>Source / Journal / Conference Title</label>
+                <input type="text" placeholder="e.g. IEEE Access" value={journalTitle} onChange={(e) => setJournalTitle(e.target.value)} style={{ width: '100%', padding: '0.75rem', borderRadius: '8px', border: '1px solid #ccc' }} required />
+              </div>
+              <div>
+                <label style={{ display: 'block', fontWeight: 'bold', fontSize: '0.8rem', marginBottom: '0.5rem' }}>Date Published</label>
+                <input type="date" value={publicationDate} onChange={(e) => setPublicationDate(e.target.value)} style={{ width: '100%', padding: '0.75rem', borderRadius: '8px', border: '1px solid #ccc' }} required />
+              </div>
+              <div style={{ gridColumn: '1 / -1' }}>
+                <label style={{ display: 'block', fontWeight: 'bold', fontSize: '0.8rem', marginBottom: '0.5rem' }}>DOI Link / ID</label>
+                <input type="text" placeholder="e.g. 10.1109/ACCESS..." value={doi} onChange={(e) => setDoi(e.target.value)} style={{ width: '100%', padding: '0.75rem', borderRadius: '8px', border: '1px solid #ccc' }} />
               </div>
             </div>
           )}
@@ -470,8 +502,8 @@ const SubmitResearchForm = ({ onSubmitted, editingProject = null, onCancelEdit =
           )}
 
           <div style={{ marginBottom: '2rem' }}>
-            <label style={{ display: 'block', fontWeight: '700', fontSize: '0.9rem', marginBottom: '0.75rem', color: '#444' }}>Invention Description / Abstract</label>
-            <textarea placeholder="Provide the core claims or summary of the intellectual property..." value={abstract} onChange={(e) => setAbstract(e.target.value)} rows="5" style={{ width: '100%', padding: '1rem', borderRadius: '12px', border: '1.5px solid var(--ssn-border)', fontSize: '1rem', resize: 'vertical' }} required></textarea>
+            <label style={{ display: 'block', fontWeight: '700', fontSize: '0.9rem', marginBottom: '0.75rem', color: '#444' }}>{mode === 'research' ? 'Abstract / Key Findings' : 'Invention Description / Abstract'}</label>
+            <textarea placeholder={mode === 'research' ? 'Enter the abstract or key findings...' : 'Provide the core claims or summary of the intellectual property...'} value={abstract} onChange={(e) => setAbstract(e.target.value)} rows="5" style={{ width: '100%', padding: '1rem', borderRadius: '12px', border: '1.5px solid var(--ssn-border)', fontSize: '1rem', resize: 'vertical' }} required></textarea>
           </div>
 
           <div style={{ marginBottom: '2.5rem' }}>
@@ -828,9 +860,19 @@ function App() {
             </div>
           </div>
         )}
+        {activeModule === 'submit_research' && (
+          <SubmitResearchForm
+            user={user}
+            mode="research"
+            onSubmitted={() => { setActiveModule('overview'); fetchMyProjects(); setEditingProject(null); }}
+            editingProject={editingProject}
+            onCancelEdit={() => setEditingProject(null)}
+          />
+        )}
         {activeModule === 'submit' && (
           <SubmitResearchForm
             user={user}
+            mode="ipr"
             onSubmitted={() => { setActiveModule('overview'); fetchMyProjects(); setEditingProject(null); }}
             editingProject={editingProject}
             onCancelEdit={() => setEditingProject(null)}
@@ -851,7 +893,7 @@ function App() {
       </DashboardLayout>
 
       {/* Floating Action Button - Quick File IPR */}
-      {activeModule !== 'submit' && (
+      {(activeModule !== 'submit' && activeModule !== 'submit_research') && (
         <button
           className="fab-btn"
           onClick={() => setActiveModule('submit')}
