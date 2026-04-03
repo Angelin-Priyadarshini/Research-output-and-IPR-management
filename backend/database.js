@@ -106,10 +106,12 @@ function initializeDatabase() {
             paper_title TEXT NOT NULL,
             authors TEXT NOT NULL,
             affiliations TEXT NOT NULL,
+            conference_scope TEXT NOT NULL CHECK(conference_scope IN ('International', 'National', 'Normal')) DEFAULT 'Normal',
             doi TEXT UNIQUE,
             volume_issue_series TEXT,
             page_or_article_id TEXT,
             issn_or_isbn TEXT,
+            indexing TEXT NOT NULL CHECK(indexing IN ('Scopus', 'Web of Science', 'None')) DEFAULT 'None',
             quartile TEXT NOT NULL CHECK(quartile IN ('Q1', 'Q2', 'Q3', 'Q4', 'NA')) DEFAULT 'NA',
             publisher TEXT,
             url TEXT,
@@ -126,6 +128,7 @@ function initializeDatabase() {
             doi TEXT UNIQUE,
             publication_source TEXT NOT NULL,
             publication_date TEXT,
+            indexing TEXT NOT NULL CHECK(indexing IN ('Scopus', 'Web of Science', 'None')) DEFAULT 'None',
             quartile TEXT NOT NULL CHECK(quartile IN ('Q1', 'Q2', 'Q3', 'Q4', 'NA')) DEFAULT 'NA',
             publisher TEXT,
             url TEXT,
@@ -143,6 +146,7 @@ function initializeDatabase() {
             affiliations TEXT NOT NULL,
             conference_name TEXT NOT NULL,
             conference_location TEXT NOT NULL,
+            conference_scope TEXT NOT NULL CHECK(conference_scope IN ('International', 'National', 'Normal')) DEFAULT 'Normal',
             conference_date TEXT,
             proceedings_title TEXT NOT NULL,
             editors TEXT,
@@ -150,6 +154,7 @@ function initializeDatabase() {
             page_or_article_id TEXT,
             doi TEXT UNIQUE,
             isbn_or_issn TEXT,
+            indexing TEXT NOT NULL CHECK(indexing IN ('Scopus', 'Web of Science', 'None')) DEFAULT 'None',
             quartile TEXT NOT NULL CHECK(quartile IN ('Q1', 'Q2', 'Q3', 'Q4', 'NA')) DEFAULT 'NA',
             publisher TEXT,
             url TEXT,
@@ -157,6 +162,20 @@ function initializeDatabase() {
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (added_by) REFERENCES users(id) ON DELETE CASCADE
         )`);
+
+        // Backward-compatible migrations for existing DBs
+        const safeAlter = (sql) => {
+            db.run(sql, (err) => {
+                if (err && !String(err.message).includes('duplicate column name')) {
+                    console.error('Migration error:', err.message);
+                }
+            });
+        };
+        safeAlter(`ALTER TABLE conference_publications ADD COLUMN conference_scope TEXT NOT NULL DEFAULT 'Normal'`);
+        safeAlter(`ALTER TABLE conference_publications ADD COLUMN indexing TEXT NOT NULL DEFAULT 'None'`);
+        safeAlter(`ALTER TABLE articles ADD COLUMN indexing TEXT NOT NULL DEFAULT 'None'`);
+        safeAlter(`ALTER TABLE inproceedings ADD COLUMN conference_scope TEXT NOT NULL DEFAULT 'Normal'`);
+        safeAlter(`ALTER TABLE inproceedings ADD COLUMN indexing TEXT NOT NULL DEFAULT 'None'`);
 
 
         // Seed initial roles/users if empty (password is 'password123' hashed)

@@ -240,20 +240,34 @@ app.post('/api/projects/:id/approve', authenticateToken, (req, res) => {
             db.get("SELECT * FROM projects WHERE id = ?", [id], (err, proj) => {
                 if (proj) {
                     createNotification(proj.owner_id, `HOD gave final approval for "${proj.title}"!`, 'overview');
+                    
+                    // Automigrate to Institutional Table if it's Research
+                    if (['Journal Publication', 'Conference', 'Article', 'In-proceeding'].includes(proj.type)) {
+                        let targetTable = '';
+                        if (proj.type === 'Journal Publication') targetTable = 'journal_publications';
+                        else if (proj.type === 'Conference') targetTable = 'conference_publications';
+                        else if (proj.type === 'Article') targetTable = 'articles';
+                        else if (proj.type === 'In-proceeding') targetTable = 'inproceedings';
+                        
+                        const titleField = targetTable === 'journal_publications' || targetTable === 'articles' ? 'article_title' : 'paper_title';
+                        const sourceField = targetTable === 'journal_publications' ? 'journal_title' : 
+                                             targetTable === 'articles' ? 'publication_source' : 
+                                             targetTable === 'conference_publications' ? 'conference_title' : 'conference_name';
 
-                    // --- Phase 6 Extension: Auto-Migration to Institutional Directory ---
-                    if (proj.type === 'Journal Publication') {
-                        db.run("INSERT INTO journal_publications (article_title, authors, affiliations, journal_title, doi, publication_date, quartile, added_by) VALUES (?, ?, 'SSN College of Engineering', ?, ?, ?, 'NA', ?)",
-                            [proj.title, proj.inventors || 'Unknown', proj.journal || 'Unknown', proj.paper_link || '', proj.date_published || new Date().toISOString().split('T')[0], proj.owner_id]);
-                    } else if (proj.type === 'Conference') {
-                        db.run("INSERT INTO conference_publications (conference_title, paper_title, authors, affiliations, doi, quartile, added_by) VALUES (?, ?, ?, 'SSN College of Engineering', ?, 'NA', ?)",
-                            [proj.journal || 'Unknown', proj.title, proj.inventors || 'Unknown', proj.paper_link || '', proj.owner_id]);
-                    } else if (proj.type === 'Article') {
-                        db.run("INSERT INTO articles (article_title, authors, affiliations, publication_source, publication_date, doi, quartile, added_by) VALUES (?, ?, 'SSN College of Engineering', ?, ?, ?, 'NA', ?)",
-                            [proj.title, proj.inventors || 'Unknown', proj.journal || 'Unknown', proj.date_published || new Date().toISOString().split('T')[0], proj.paper_link || '', proj.owner_id]);
-                    } else if (proj.type === 'In-proceeding') {
-                        db.run("INSERT INTO inproceedings (paper_title, authors, affiliations, proceedings_title, quartile, added_by) VALUES (?, ?, 'SSN College of Engineering', ?, 'NA', ?)",
-                            [proj.title, proj.inventors || 'Unknown', proj.journal || 'Unknown', proj.owner_id]);
+                        const targetSql = `INSERT INTO ${targetTable} (${titleField}, authors, affiliations, ${sourceField}, publication_date, doi, added_by) VALUES (?, ?, ?, ?, ?, ?, ?)`;
+                        
+                        db.run(targetSql, [
+                            proj.title,
+                            proj.inventors || '', // Authors mapped to inventors field
+                            'SSN College of Engineering',
+                            proj.journal || '',
+                            proj.date_published || '2026',
+                            proj.paper_link || '',
+                            proj.owner_id
+                        ], function(insertErr) {
+                            if (insertErr) console.error("Auto-Migration Bridge Failed:", insertErr);
+                            else console.log(`Auto-Migrated ${proj.title} to ${targetTable}`);
+                        });
                     }
                 }
             });
@@ -264,6 +278,20 @@ app.post('/api/projects/:id/approve', authenticateToken, (req, res) => {
 });
 
 // --- ROMS Portal Routes (Phase 11 Integration) ---
+
+function toDateStringFromParts(parts) {
+    if (!Array.isArray(parts) || parts.length === 0) return '';
+    const [year, month, day] = parts;
+    if (!year) return '';
+    if (!month) return `${year}`;
+    if (!day) return `${String(year)}-${String(month).padStart(2, '0')}`;
+    return `${String(year)}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+}
+
+function stripTags(text) {
+    if (!text) return '';
+    return String(text).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+}
 
 app.get('/api/doi/extract', async (req, res) => {
     let { url } = req.query;
@@ -283,13 +311,21 @@ app.get('/api/doi/extract', async (req, res) => {
             let authors = (msg.author || []).map(a => `${a.given || ''} ${a.family || ''}`.trim()).filter(Boolean).join(', ');
             let title = (msg.title || [])[0] || '';
             let source = (msg['container-title'] || [])[0] || '';
-            let pub_date = msg['published-print']?.['date-parts']?.[0]?.[0] || msg.issued?.['date-parts']?.[0]?.[0] || '';
+            const dateParts = msg['published-print']?.['date-parts']?.[0]
+                || msg.published?.['date-parts']?.[0]
+                || msg.issued?.['date-parts']?.[0]
+                || [];
+            const pubDate = toDateStringFromParts(dateParts);
+            const keywords = (msg.subject || []).filter(Boolean).join(', ');
+            const abstract = stripTags(msg.abstract || '');
 
             return res.json({
                 doi: msg.DOI || doi, title, authors,
                 affiliations: 'SSN College of Engineering', // Default affiliation from ROMS
                 source, publisher: msg.publisher || '',
-                publication_date: pub_date ? String(pub_date) : '',
+                publication_date: pubDate,
+                abstract,
+                keywords,
                 url: msg.URL || '', volume_number: msg.volume || '', issue_number: msg.issue || '',
                 page_or_article_id: msg.page || msg['article-number'] || '',
                 issn_or_isbn: (msg.ISSN || []).join(', ') || (msg.ISBN || []).join(', '),
@@ -304,15 +340,28 @@ app.get('/api/doi/extract', async (req, res) => {
         if (response.ok) {
             const data = await response.json();
             let authors = (data.authorships || []).map(a => a.author?.display_name).filter(Boolean).join(', ');
+            const keywords = (data.concepts || []).slice(0, 8).map(c => c.display_name).filter(Boolean).join(', ');
+            const abstract = stripTags(data.abstract_inverted_index
+                ? Object.entries(data.abstract_inverted_index)
+                    .flatMap(([word, positions]) => (positions || []).map((pos) => ({ word, pos })))
+                    .sort((a, b) => a.pos - b.pos)
+                    .map((item) => item.word)
+                    .join(' ')
+                : ''
+            );
             return res.json({
                 doi: (data.doi || doi).replace('https://doi.org/', ''),
                 title: data.display_name, authors,
                 affiliations: 'OpenAlex Sourced',
                 source: data.primary_location?.source?.display_name || '',
                 publication_date: data.publication_date || '',
+                abstract,
+                keywords,
                 url: data.primary_location?.landing_page_url || '',
                 volume_number: data.biblio?.volume || '', issue_number: data.biblio?.issue || '',
-                page_or_article_id: data.biblio?.first_page ? `${data.biblio.first_page}-${data.biblio.last_page}` : ''
+                page_or_article_id: data.biblio?.first_page ? `${data.biblio.first_page}-${data.biblio.last_page || ''}` : '',
+                conference_name: data.primary_location?.source?.display_name || '',
+                proceedings_title: data.primary_location?.source?.display_name || ''
             });
         }
         res.status(404).json({ message: 'DOI metadata not found on Crossref or OpenAlex.' });
@@ -321,49 +370,453 @@ app.get('/api/doi/extract', async (req, res) => {
     }
 });
 
-// Dynamic CRUD for ROMS Tables: journals, conferences, articles, inproceedings
-const romsTables = [
-    { route: 'journals', table: 'journal_publications' },
-    { route: 'conferences', table: 'conference_publications' },
-    { route: 'articles', table: 'articles' },
-    { route: 'inproceedings', table: 'inproceedings' }
-];
+const allAsync = (query, params = []) => new Promise((resolve, reject) => {
+    db.all(query, params, (err, rows) => (err ? reject(err) : resolve(rows)));
+});
 
-romsTables.forEach(({ route, table }) => {
-    // GET ALL
-    app.get(`/api/${route}`, authenticateToken, (req, res) => {
-        let query = `SELECT * FROM ${table} ORDER BY created_at DESC`;
-        let params = [];
-        if (req.user.role === 'Student' || req.user.role === 'Faculty' || req.user.role === 'Professor') {
-            // Usually Faculty/Student see their own or all? Let's show all for portal transparency, 
-            // but ROMS restricts. We'll show all to match our Strategic Dashboard requirements.
+const getAsync = (query, params = []) => new Promise((resolve, reject) => {
+    db.get(query, params, (err, row) => (err ? reject(err) : resolve(row)));
+});
+
+const runAsync = (query, params = []) => new Promise((resolve, reject) => {
+    db.run(query, params, function onRun(err) {
+        if (err) return reject(err);
+        resolve({ changes: this.changes, lastID: this.lastID });
+    });
+});
+
+const researchTables = {
+    journals: {
+        table: 'journal_publications',
+        hasIndexing: true,
+        hasConferenceScope: false,
+        titleField: 'article_title',
+        sourceField: 'journal_title',
+        dateField: 'publication_date',
+        requiredFields: ['article_title', 'authors', 'affiliations', 'journal_title'],
+        allowedFields: ['article_title', 'authors', 'affiliations', 'orcid_ids', 'journal_title', 'volume_number', 'issue_number', 'page_or_article_id', 'doi', 'publication_date', 'indexing', 'quartile', 'publisher', 'url']
+    },
+    conferences: {
+        table: 'conference_publications',
+        hasIndexing: true,
+        hasConferenceScope: true,
+        titleField: 'paper_title',
+        sourceField: 'conference_title',
+        dateField: 'created_at',
+        requiredFields: ['conference_title', 'paper_title', 'authors', 'affiliations'],
+        allowedFields: ['conference_title', 'paper_title', 'authors', 'affiliations', 'conference_scope', 'indexing', 'doi', 'volume_issue_series', 'page_or_article_id', 'issn_or_isbn', 'quartile', 'publisher', 'url']
+    },
+    articles: {
+        table: 'articles',
+        hasIndexing: true,
+        hasConferenceScope: false,
+        titleField: 'article_title',
+        sourceField: 'publication_source',
+        dateField: 'publication_date',
+        requiredFields: ['article_title', 'authors', 'affiliations', 'publication_source'],
+        allowedFields: ['article_title', 'authors', 'affiliations', 'doi', 'publication_source', 'publication_date', 'indexing', 'quartile', 'publisher', 'url', 'abstract', 'keywords']
+    },
+    inproceedings: {
+        table: 'inproceedings',
+        hasIndexing: true,
+        hasConferenceScope: true,
+        titleField: 'paper_title',
+        sourceField: 'conference_name',
+        dateField: 'conference_date',
+        requiredFields: ['paper_title', 'authors', 'affiliations', 'conference_name', 'conference_location', 'proceedings_title'],
+        allowedFields: ['paper_title', 'authors', 'affiliations', 'conference_name', 'conference_location', 'conference_scope', 'conference_date', 'proceedings_title', 'editors', 'volume_or_series_number', 'page_or_article_id', 'doi', 'isbn_or_issn', 'indexing', 'quartile', 'publisher', 'url']
+    }
+};
+
+const isResearchAdmin = (role) => role === 'HOD' || role === 'Professor';
+
+function getResearchFilters(config, req) {
+    const where = [];
+    const params = [];
+    const q = (req.query.q || '').trim();
+    const source = (req.query.source || '').trim();
+    const author = (req.query.author || '').trim();
+    const affiliation = (req.query.affiliation || '').trim();
+    const publisher = (req.query.publisher || '').trim();
+    const conferenceScope = (req.query.conferenceScope || '').trim();
+    const addedByRole = (req.query.addedByRole || '').trim();
+    const quartile = (req.query.quartile || '').trim();
+    const indexing = (req.query.indexing || '').trim();
+    const hasDoi = (req.query.hasDoi || '').trim().toLowerCase();
+    const hasUrl = (req.query.hasUrl || '').trim().toLowerCase();
+    const hasAbstract = (req.query.hasAbstract || '').trim().toLowerCase();
+    const hasKeywords = (req.query.hasKeywords || '').trim().toLowerCase();
+    const mineOnly = String(req.query.mineOnly || '').toLowerCase() === 'true';
+    const fromYear = parseInt(req.query.fromYear, 10);
+    const toYear = parseInt(req.query.toYear, 10);
+    const addedBy = parseInt(req.query.addedBy, 10);
+
+    if (q) {
+        const like = `%${q}%`;
+        where.push(`(
+            t.${config.titleField} LIKE ?
+            OR t.authors LIKE ?
+            OR t.${config.sourceField} LIKE ?
+            OR IFNULL(t.doi, '') LIKE ?
+            OR IFNULL(t.affiliations, '') LIKE ?
+        )`);
+        params.push(like, like, like, like, like);
+    }
+
+    if (quartile) {
+        where.push('t.quartile = ?');
+        params.push(quartile);
+    }
+
+    if (source) {
+        where.push(`t.${config.sourceField} LIKE ?`);
+        params.push(`%${source}%`);
+    }
+    if (author) {
+        where.push('t.authors LIKE ?');
+        params.push(`%${author}%`);
+    }
+    if (affiliation) {
+        where.push('IFNULL(t.affiliations, \'\') LIKE ?');
+        params.push(`%${affiliation}%`);
+    }
+    if (publisher && config.allowedFields.includes('publisher')) {
+        where.push('IFNULL(t.publisher, \'\') LIKE ?');
+        params.push(`%${publisher}%`);
+    }
+
+    if (config.hasIndexing && indexing) {
+        where.push('t.indexing = ?');
+        params.push(indexing);
+    }
+    if (config.hasConferenceScope && conferenceScope) {
+        where.push('t.conference_scope = ?');
+        params.push(conferenceScope);
+    }
+    if (addedByRole) {
+        where.push('u.role = ?');
+        params.push(addedByRole);
+    }
+
+    if (hasDoi === 'true') where.push('IFNULL(t.doi, \'\') <> \'\'');
+    if (hasDoi === 'false') where.push('IFNULL(t.doi, \'\') = \'\'');
+    if (hasUrl === 'true' && config.allowedFields.includes('url')) where.push('IFNULL(t.url, \'\') <> \'\'');
+    if (hasUrl === 'false' && config.allowedFields.includes('url')) where.push('IFNULL(t.url, \'\') = \'\'');
+    if (hasAbstract === 'true' && config.allowedFields.includes('abstract')) where.push('IFNULL(t.abstract, \'\') <> \'\'');
+    if (hasAbstract === 'false' && config.allowedFields.includes('abstract')) where.push('IFNULL(t.abstract, \'\') = \'\'');
+    if (hasKeywords === 'true' && config.allowedFields.includes('keywords')) where.push('IFNULL(t.keywords, \'\') <> \'\'');
+    if (hasKeywords === 'false' && config.allowedFields.includes('keywords')) where.push('IFNULL(t.keywords, \'\') = \'\'');
+
+    if (!Number.isNaN(addedBy)) {
+        where.push('t.added_by = ?');
+        params.push(addedBy);
+    }
+
+    if (mineOnly) {
+        where.push('t.added_by = ?');
+        params.push(req.user.id);
+    }
+
+    const yearExpr = `CAST(substr(COALESCE(NULLIF(t.${config.dateField}, ''), t.created_at), 1, 4) AS INTEGER)`;
+    if (!Number.isNaN(fromYear)) {
+        where.push(`${yearExpr} >= ?`);
+        params.push(fromYear);
+    }
+    if (!Number.isNaN(toYear)) {
+        where.push(`${yearExpr} <= ?`);
+        params.push(toYear);
+    }
+
+    return { where, params };
+}
+
+function sanitizeResearchPayload(payload, config) {
+    const data = {};
+    config.allowedFields.forEach((field) => {
+        if (Object.prototype.hasOwnProperty.call(payload, field)) {
+            data[field] = payload[field];
         }
-        db.all(query, params, (err, rows) => {
-            if (err) return res.status(500).json({ message: 'Database error', error: err.message });
-            res.json(rows);
+    });
+    return data;
+}
+
+async function fetchResearchRows(route, req) {
+    const config = researchTables[route];
+    const { where, params } = getResearchFilters(config, req);
+    const sortDir = String(req.query.sortDir || 'desc').toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+    const allowedSort = new Set([config.titleField, config.sourceField, config.dateField, 'quartile', 'created_at']);
+    const sortByCandidate = String(req.query.sortBy || 'created_at');
+    const sortBy = allowedSort.has(sortByCandidate) ? sortByCandidate : 'created_at';
+
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
+    const offset = (page - 1) * limit;
+
+    const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+    const baseFrom = `FROM ${config.table} t LEFT JOIN users u ON u.id = t.added_by ${whereSql}`;
+
+    const countRow = await getAsync(`SELECT COUNT(*) as total ${baseFrom}`, params);
+    const rows = await allAsync(
+        `SELECT t.*, u.name AS added_by_name, u.role AS added_by_role ${baseFrom}
+         ORDER BY t.${sortBy} ${sortDir}, t.id DESC
+         LIMIT ? OFFSET ?`,
+        [...params, limit, offset]
+    );
+
+    const filterRows = await allAsync(
+        `SELECT DISTINCT t.quartile, ${
+            config.hasIndexing ? 't.indexing,' : ''
+        } CAST(substr(COALESCE(NULLIF(t.${config.dateField}, ''), t.created_at), 1, 4) AS INTEGER) AS year
+         FROM ${config.table} t
+         WHERE 1 = 1`,
+        []
+    );
+
+    return {
+        data: rows.map((row) => ({
+            ...row,
+            can_edit: isResearchAdmin(req.user.role) || row.added_by === req.user.id,
+            can_delete: isResearchAdmin(req.user.role) || row.added_by === req.user.id
+        })),
+        pagination: {
+            total: countRow?.total || 0,
+            page,
+            limit,
+            pages: Math.max(1, Math.ceil((countRow?.total || 0) / limit))
+        },
+        filters: {
+            quartiles: [...new Set(filterRows.map((r) => r.quartile).filter(Boolean))].sort(),
+            years: [...new Set(filterRows.map((r) => r.year).filter((y) => Number.isInteger(y)))].sort((a, b) => b - a),
+            indexing: config.hasIndexing
+                ? [...new Set(filterRows.map((r) => r.indexing).filter(Boolean))].sort()
+                : []
+        }
+    };
+}
+
+app.get('/api/research/analytics', authenticateToken, async (req, res) => {
+    try {
+        const requestedTypes = String(req.query.types || '')
+            .split(',')
+            .map((s) => s.trim().toLowerCase())
+            .filter(Boolean);
+        const routes = requestedTypes.length
+            ? Object.keys(researchTables).filter((route) => requestedTypes.includes(route))
+            : Object.keys(researchTables);
+
+        if (routes.length === 0) {
+            return res.status(400).json({ message: 'Invalid type filter supplied.' });
+        }
+
+        const results = await Promise.all(routes.map(async (route) => {
+            const config = researchTables[route];
+            const { where, params } = getResearchFilters(config, req);
+            const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+            const rows = await allAsync(
+                `SELECT t.*, u.name AS added_by_name, u.role AS added_by_role FROM ${config.table} t
+                 LEFT JOIN users u ON u.id = t.added_by
+                 ${whereSql}`,
+                params
+            );
+            return { route, rows, config };
+        }));
+
+        const dataByType = {};
+        let allRows = [];
+        results.forEach(({ route, rows }) => {
+            dataByType[route] = rows;
+            allRows = allRows.concat(rows.map((r) => ({ ...r, __type: route })));
         });
+
+        const totals = {
+            journals: (dataByType.journals || []).length,
+            conferences: (dataByType.conferences || []).length,
+            articles: (dataByType.articles || []).length,
+            inproceedings: (dataByType.inproceedings || []).length
+        };
+        totals.overall = totals.journals + totals.conferences + totals.articles + totals.inproceedings;
+
+        const quartileMap = { Q1: 0, Q2: 0, Q3: 0, Q4: 0, NA: 0 };
+        allRows.forEach((row) => {
+            const q = row.quartile || 'NA';
+            if (!Object.prototype.hasOwnProperty.call(quartileMap, q)) quartileMap.NA += 1;
+            else quartileMap[q] += 1;
+        });
+        const quartileDistribution = Object.keys(quartileMap).map((q) => ({ name: q, count: quartileMap[q] }));
+
+        const indexingMap = { Scopus: 0, 'Web of Science': 0, None: 0 };
+        allRows.forEach((row) => {
+            const idx = row.indexing || 'None';
+            indexingMap[idx] = (indexingMap[idx] || 0) + 1;
+        });
+        const indexingDistribution = Object.keys(indexingMap).map((name) => ({ name, count: indexingMap[name] }));
+
+        const contributors = {};
+        const roleMap = { HOD: 0, Professor: 0, Scholar: 0, Student: 0, Other: 0 };
+        const sourceMap = {};
+        const conferenceScopeMap = { International: 0, National: 0, Normal: 0 };
+        allRows.forEach((row) => {
+            const key = `${row.added_by || 0}`;
+            if (!contributors[key]) {
+                contributors[key] = { added_by: row.added_by, added_by_name: row.added_by_name || 'Unknown', count: 0 };
+            }
+            contributors[key].count += 1;
+
+            const role = row.added_by_role || 'Other';
+            if (!Object.prototype.hasOwnProperty.call(roleMap, role)) roleMap.Other += 1;
+            else roleMap[role] += 1;
+
+            const sourceName = row.journal_title || row.publication_source || row.conference_title || row.conference_name || '';
+            if (sourceName) sourceMap[sourceName] = (sourceMap[sourceName] || 0) + 1;
+
+            const scope = row.conference_scope || '';
+            if (scope && Object.prototype.hasOwnProperty.call(conferenceScopeMap, scope)) {
+                conferenceScopeMap[scope] += 1;
+            }
+        });
+        const topContributors = Object.values(contributors).sort((a, b) => b.count - a.count).slice(0, 7);
+        const roleDistribution = Object.keys(roleMap).map((name) => ({ name, count: roleMap[name] })).filter((r) => r.count > 0);
+        const topSources = Object.entries(sourceMap)
+            .map(([name, count]) => ({ name, count }))
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 8);
+        const conferenceScopeDistribution = Object.keys(conferenceScopeMap).map((name) => ({ name, count: conferenceScopeMap[name] })).filter((r) => r.count > 0);
+
+        const yearlyMap = {};
+        results.forEach(({ route, rows, config }) => {
+            rows.forEach((row) => {
+                const rawDate = row[config.dateField] || row.created_at || '';
+                const year = parseInt(String(rawDate).slice(0, 4), 10);
+                if (Number.isNaN(year)) return;
+                if (!yearlyMap[year]) {
+                    yearlyMap[year] = { year, journals: 0, conferences: 0, articles: 0, inproceedings: 0, total: 0 };
+                }
+                yearlyMap[year][route] += 1;
+                yearlyMap[year].total += 1;
+            });
+        });
+        const yearlyTrend = Object.values(yearlyMap).sort((a, b) => a.year - b.year);
+
+        const doiCount = allRows.filter((r) => String(r.doi || '').trim() !== '').length;
+        const urlCount = allRows.filter((r) => String(r.url || '').trim() !== '').length;
+        const abstractCount = allRows.filter((r) => String(r.abstract || '').trim() !== '').length;
+        const keywordCount = allRows.filter((r) => String(r.keywords || '').trim() !== '').length;
+        const q1q2Count = allRows.filter((r) => r.quartile === 'Q1' || r.quartile === 'Q2').length;
+        const indexedCount = allRows.filter((r) => ['Scopus', 'Web of Science'].includes(r.indexing)).length;
+
+        const pct = (value) => (totals.overall > 0 ? Number(((value / totals.overall) * 100).toFixed(1)) : 0);
+        const qualityMetrics = {
+            doiCoverage: pct(doiCount),
+            urlCoverage: pct(urlCount),
+            abstractCoverage: pct(abstractCount),
+            keywordCoverage: pct(keywordCount),
+            q1q2Share: pct(q1q2Count),
+            indexedShare: pct(indexedCount)
+        };
+
+        const filterOptions = {
+            quartiles: [...new Set(allRows.map((r) => r.quartile).filter(Boolean))].sort(),
+            years: [...new Set(yearlyTrend.map((r) => r.year))].sort((a, b) => b - a),
+            indexing: [...new Set(allRows.map((r) => r.indexing).filter(Boolean))].sort(),
+            conferenceScopes: [...new Set(allRows.map((r) => r.conference_scope).filter(Boolean))].sort(),
+            publishers: [...new Set(allRows.map((r) => r.publisher).filter(Boolean))].sort().slice(0, 80),
+            contributors: topContributors.map((c) => ({ id: c.added_by, name: c.added_by_name })),
+            roles: [...new Set(allRows.map((r) => r.added_by_role).filter(Boolean))].sort(),
+            types: routes
+        };
+
+        res.json({
+            totals,
+            byType: [
+                { name: 'Journals', value: totals.journals },
+                { name: 'Conferences', value: totals.conferences },
+                { name: 'Articles', value: totals.articles },
+                { name: 'In-proceedings', value: totals.inproceedings }
+            ],
+            quartileDistribution,
+            indexingDistribution,
+            conferenceScopeDistribution,
+            roleDistribution,
+            topSources,
+            yearlyTrend,
+            topContributors,
+            qualityMetrics,
+            filterOptions
+        });
+    } catch (error) {
+        res.status(500).json({ message: 'Failed to load research analytics', error: error.message });
+    }
+});
+
+Object.keys(researchTables).forEach((route) => {
+    const config = researchTables[route];
+
+    app.get(`/api/${route}`, authenticateToken, async (req, res) => {
+        try {
+            const data = await fetchResearchRows(route, req);
+            res.json(data);
+        } catch (error) {
+            res.status(500).json({ message: 'Database error', error: error.message });
+        }
     });
 
-    // POST / CREATE
-    app.post(`/api/${route}`, authenticateToken, (req, res) => {
-        const data = { ...req.body, added_by: req.user.id };
-        const keys = Object.keys(data);
-        const placeholders = keys.map(() => '?').join(', ');
-        const values = Object.values(data);
-        const query = `INSERT INTO ${table} (${keys.join(', ')}) VALUES (${placeholders})`;
-        
-        db.run(query, values, function(err) {
-            if (err) return res.status(500).json({ message: 'Failed to add record', error: err.message });
-            res.status(201).json({ id: this.lastID, message: 'Record added successfully' });
-        });
+    app.post(`/api/${route}`, authenticateToken, async (req, res) => {
+        try {
+            const data = sanitizeResearchPayload(req.body, config);
+            for (const field of config.requiredFields) {
+                if (!data[field] || !String(data[field]).trim()) {
+                    return res.status(400).json({ message: `Field "${field}" is required.` });
+                }
+            }
+
+            data.added_by = req.user.id;
+            const keys = Object.keys(data);
+            const placeholders = keys.map(() => '?').join(', ');
+            const values = keys.map((k) => data[k]);
+            const result = await runAsync(`INSERT INTO ${config.table} (${keys.join(', ')}) VALUES (${placeholders})`, values);
+            res.status(201).json({ id: result.lastID, message: 'Research record created successfully.' });
+        } catch (error) {
+            res.status(500).json({ message: 'Failed to add research record', error: error.message });
+        }
     });
 
-    // DELETE
-    app.delete(`/api/${route}/:id`, authenticateToken, (req, res) => {
-        db.run(`DELETE FROM ${table} WHERE id = ?`, [req.params.id], function(err) {
-            if (err) return res.status(500).json({ message: 'Delete failed' });
-            res.json({ message: 'Record deleted.' });
-        });
+    app.put(`/api/${route}/:id`, authenticateToken, async (req, res) => {
+        try {
+            const record = await getAsync(`SELECT * FROM ${config.table} WHERE id = ?`, [req.params.id]);
+            if (!record) return res.status(404).json({ message: 'Record not found.' });
+
+            if (!isResearchAdmin(req.user.role) && record.added_by !== req.user.id) {
+                return res.status(403).json({ message: 'You can edit only your own research entries.' });
+            }
+
+            const updates = sanitizeResearchPayload(req.body, config);
+            if (Object.keys(updates).length === 0) {
+                return res.status(400).json({ message: 'No editable fields supplied.' });
+            }
+
+            const setClause = Object.keys(updates).map((key) => `${key} = ?`).join(', ');
+            const values = [...Object.values(updates), req.params.id];
+            await runAsync(`UPDATE ${config.table} SET ${setClause} WHERE id = ?`, values);
+            res.json({ message: 'Research record updated successfully.' });
+        } catch (error) {
+            res.status(500).json({ message: 'Failed to update research record', error: error.message });
+        }
+    });
+
+    app.delete(`/api/${route}/:id`, authenticateToken, async (req, res) => {
+        try {
+            const record = await getAsync(`SELECT id, added_by FROM ${config.table} WHERE id = ?`, [req.params.id]);
+            if (!record) return res.status(404).json({ message: 'Record not found.' });
+
+            if (!isResearchAdmin(req.user.role) && record.added_by !== req.user.id) {
+                return res.status(403).json({ message: 'You can delete only your own research entries.' });
+            }
+
+            await runAsync(`DELETE FROM ${config.table} WHERE id = ?`, [req.params.id]);
+            res.json({ message: 'Research record deleted.' });
+        } catch (error) {
+            res.status(500).json({ message: 'Delete failed', error: error.message });
+        }
     });
 });
 
@@ -491,16 +944,16 @@ async function seedData() {
     ]);
 
     seedRoms('conference_publications', 'conference_title', [
-        { conference_title: 'International Conference on Machine Learning (ICML)', paper_title: 'Scalable Graph Neural Networks', authors: 'Hinton G., LeCun Y.', affiliations: 'AI Labs', doi: '10.5555/icml.2025', quartile: 'Q1', added_by: 1 },
-        { conference_title: 'IEEE Virtual Reality 2024', paper_title: 'Haptic Feedback in Metaverse Architectures', authors: 'Carmack J.', affiliations: 'Oculus', doi: '10.1109/VR.2024.998', quartile: 'NA', added_by: 1 }
+        { conference_title: 'International Conference on Machine Learning (ICML)', conference_scope: 'International', paper_title: 'Scalable Graph Neural Networks', authors: 'Hinton G., LeCun Y.', affiliations: 'AI Labs', doi: '10.5555/icml.2025', indexing: 'Scopus', quartile: 'Q1', added_by: 1 },
+        { conference_title: 'IEEE Virtual Reality 2024', conference_scope: 'International', paper_title: 'Haptic Feedback in Metaverse Architectures', authors: 'Carmack J.', affiliations: 'Oculus', doi: '10.1109/VR.2024.998', indexing: 'Web of Science', quartile: 'NA', added_by: 1 }
     ]);
 
     seedRoms('articles', 'article_title', [
-        { article_title: 'Cybersecurity post-Quantum Era', authors: 'Rivest R., Shamir A.', affiliations: 'MIT', publication_source: 'Communications of the ACM', publication_date: '2026-01-05', doi: '10.1145/38291', quartile: 'Q1', added_by: 2 }
+        { article_title: 'Cybersecurity post-Quantum Era', authors: 'Rivest R., Shamir A.', affiliations: 'MIT', publication_source: 'Communications of the ACM', publication_date: '2026-01-05', doi: '10.1145/38291', indexing: 'Scopus', quartile: 'Q1', added_by: 2 }
     ]);
 
     seedRoms('inproceedings', 'paper_title', [
-        { paper_title: 'Distributed Consensus Algorithms Optimization', authors: 'Lamport L.', affiliations: 'Microsoft Research', conference_name: 'Symposium on Principles of Distributed Computing', conference_location: 'NYC, USA', proceedings_title: 'PODC 2025', quartile: 'Q1', added_by: 2 }
+        { paper_title: 'Distributed Consensus Algorithms Optimization', authors: 'Lamport L.', affiliations: 'Microsoft Research', conference_name: 'Symposium on Principles of Distributed Computing', conference_scope: 'International', conference_location: 'NYC, USA', proceedings_title: 'PODC 2025', indexing: 'Web of Science', quartile: 'Q1', added_by: 2 }
     ]);
 }
 

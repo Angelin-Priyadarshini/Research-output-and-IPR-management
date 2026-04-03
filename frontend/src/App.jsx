@@ -311,16 +311,19 @@ const SubmitResearchForm = ({ onSubmitted, editingProject = null, onCancelEdit =
   const [abstract, setAbstract] = useState(editingProject?.abstract || '');
   const [mentorId, setMentorId] = useState(editingProject?.mentor_id || '');
 
-  // New Phase 6 Fields
+  // Academic Meta Fields
   const [year, setYear] = useState(editingProject?.year || new Date().getFullYear());
   const [journal, setJournal] = useState(editingProject?.journal || '');
-  // Journal Specific Fields
+  const [paperLink, setPaperLink] = useState(editingProject?.paper_link || '');
+  
+  // Re-injected Detailed Research Fields
   const [authors, setAuthors] = useState(editingProject?.authors || '');
   const [affiliations, setAffiliations] = useState(editingProject?.affiliations || 'SSN College of Engineering');
   const [journalTitle, setJournalTitle] = useState(editingProject?.journal_title || '');
   const [doi, setDoi] = useState(editingProject?.doi || '');
   const [publicationDate, setPublicationDate] = useState(editingProject?.publication_date || '');
 
+  // IPR Core Fields
   const [patentNo, setPatentNo] = useState(editingProject?.patent_no || '');
   const [inventors, setInventors] = useState(editingProject?.inventors || '');
   const [dateFiled, setDateFiled] = useState(editingProject?.date_filed || '');
@@ -354,7 +357,6 @@ const SubmitResearchForm = ({ onSubmitted, editingProject = null, onCancelEdit =
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
-
     const url = editingProject
       ? `http://localhost:5000/api/projects/${editingProject.id}`
       : 'http://localhost:5000/api/projects/submit';
@@ -763,6 +765,21 @@ function App() {
     setActiveModule('submit');
   };
 
+  const researchModules = ['research_dashboard', 'doi_scraper', 'journals', 'conferences', 'articles', 'inproceedings'];
+  const isResearchActive = researchModules.includes(activeModule);
+
+  const handleFloatingAction = () => {
+    if (isResearchActive) {
+      const moduleKey = ['journals', 'conferences', 'articles', 'inproceedings'].includes(activeModule) ? activeModule : 'journals';
+      window.dispatchEvent(new CustomEvent('research-open-create', { detail: { moduleKey } }));
+      if (activeModule === 'research_dashboard' || activeModule === 'doi_scraper') {
+        setActiveModule(moduleKey);
+      }
+      return;
+    }
+    setActiveModule('submit');
+  };
+
   return (
     <>
       <DashboardLayout
@@ -880,10 +897,10 @@ function App() {
         )}
         {activeModule === 'research_dashboard' && <ResearchAnalytics />}
         {activeModule === 'doi_scraper' && <DoiScraperModule />}
-        {activeModule === 'journals' && <ResearchListModule type="Journal" endpoint="/api/journals" title="Journal Publications" icon={<BookOpen size={32} />} />}
-        {activeModule === 'conferences' && <ResearchListModule type="Conference" endpoint="/api/conferences" title="Conference Proceedings" icon={<Users size={32} />} />}
-        {activeModule === 'articles' && <ResearchListModule type="Article" endpoint="/api/articles" title="Research Articles" icon={<Newspaper size={32} />} />}
-        {activeModule === 'inproceedings' && <ResearchListModule type="In-proceeding" endpoint="/api/inproceedings" title="In-proceedings" icon={<FolderTree size={32} />} />}
+        {activeModule === 'journals' && <ResearchListModule moduleKey="journals" user={user} endpoint="/api/journals" title="Journal Publications" icon={<BookOpen size={32} />} />}
+        {activeModule === 'conferences' && <ResearchListModule moduleKey="conferences" user={user} endpoint="/api/conferences" title="Conference Proceedings" icon={<Users size={32} />} />}
+        {activeModule === 'articles' && <ResearchListModule moduleKey="articles" user={user} endpoint="/api/articles" title="Research Articles" icon={<Newspaper size={32} />} />}
+        {activeModule === 'inproceedings' && <ResearchListModule moduleKey="inproceedings" user={user} endpoint="/api/inproceedings" title="In-proceedings" icon={<FolderTree size={32} />} />}
         
         {activeModule === 'strategic' && user.role === 'HOD' && <StrategicDashboard />}
         {activeModule === 'patents' && <PatentModuleList />}
@@ -896,8 +913,8 @@ function App() {
       {(activeModule !== 'submit' && activeModule !== 'submit_research') && (
         <button
           className="fab-btn"
-          onClick={() => setActiveModule('submit')}
-          title="File New IPR Disclosure"
+          onClick={handleFloatingAction}
+          title={isResearchActive ? 'Add New Research Output' : 'File New IPR Disclosure'}
         >
           <Upload size={26} />
         </button>
